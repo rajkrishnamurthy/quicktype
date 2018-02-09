@@ -27,6 +27,7 @@ import { Readable } from "stream";
 import { panic, assert, defined, withDefault } from "./Support";
 import { introspectServer } from "./GraphQLIntrospection";
 import { getStream } from "./get-stream/index";
+import { train } from "./MarkovChain";
 
 const commandLineArgs = require("command-line-args");
 const getUsage = require("command-line-usage");
@@ -49,10 +50,13 @@ export interface CLIOptions {
     graphqlServerHeader?: string[];
     template?: string;
     out?: string;
+    buildMarkovChain?: string;
+    findSimilarClassesSchema?: string;
 
     noMaps: boolean;
     noEnums: boolean;
     alphabetizeProperties: boolean;
+    allPropertiesOptional: boolean;
     noCombineClasses: boolean;
     noRender: boolean;
 
@@ -232,11 +236,14 @@ function inferOptions(opts: Partial<CLIOptions>): CLIOptions {
         noCombineClasses: !!opts.noCombineClasses,
         noRender: !!opts.noRender,
         alphabetizeProperties: !!opts.alphabetizeProperties,
+        allPropertiesOptional: !!opts.allPropertiesOptional,
         rendererOptions: opts.rendererOptions || {},
         help: opts.help || false,
         quiet: opts.quiet || false,
         version: opts.version || false,
         out: opts.out,
+        buildMarkovChain: opts.buildMarkovChain,
+        findSimilarClassesSchema: opts.findSimilarClassesSchema,
         graphqlSchema: opts.graphqlSchema,
         graphqlIntrospect: opts.graphqlIntrospect,
         graphqlServerHeader: opts.graphqlServerHeader,
@@ -339,6 +346,23 @@ const optionDefinitions: OptionDefinition[] = [
         description: "Alphabetize order of class properties."
     },
     {
+        name: "all-properties-optional",
+        type: Boolean,
+        description: "Make all class properties optional."
+    },
+    {
+        name: "build-markov-chain",
+        type: String,
+        typeLabel: "FILE",
+        description: "Markov chain corpus filename."
+    },
+    {
+        name: "find-similar-classes-schema",
+        type: String,
+        typeLabel: "FILE",
+        description: "Base schema for finding similar classes"
+    },
+    {
         name: "quiet",
         type: Boolean,
         description: "Don't show issues in the generated code."
@@ -376,7 +400,7 @@ const sectionsBeforeRenderers: UsageSection[] = [
     {
         header: "Options",
         optionList: optionDefinitions,
-        hide: ["no-render"]
+        hide: ["no-render", "build-markov-chain", "find-similar-classes-schema"]
     }
 ];
 
@@ -520,6 +544,13 @@ export async function main(args: string[] | Partial<CLIOptions>) {
             console.log("Visit quicktype.io for more info.");
             return;
         }
+        if (options.buildMarkovChain !== undefined) {
+            const contents = fs.readFileSync(options.buildMarkovChain).toString();
+            const lines = contents.split("\n");
+            const mc = train(lines, 3);
+            console.log(JSON.stringify(mc));
+            return;
+        }
 
         let sources: TypeSource[] = [];
         switch (options.srcLang) {
@@ -589,16 +620,23 @@ export async function main(args: string[] | Partial<CLIOptions>) {
             handlebarsTemplate = fs.readFileSync(options.template, "utf8");
         }
 
+        let findSimilarClassesSchema: string | undefined = undefined;
+        if (options.findSimilarClassesSchema !== undefined) {
+            findSimilarClassesSchema = fs.readFileSync(options.findSimilarClassesSchema, "utf8");
+        }
+
         let run = new Run({
             lang: options.lang,
             sources,
             inferMaps: !options.noMaps,
             inferEnums: !options.noEnums,
             alphabetizeProperties: options.alphabetizeProperties,
+            allPropertiesOptional: options.allPropertiesOptional,
             combineClasses: !options.noCombineClasses,
             noRender: options.noRender,
             rendererOptions: options.rendererOptions,
             handlebarsTemplate,
+            findSimilarClassesSchema,
             outputFilename: options.out !== undefined ? path.basename(options.out) : undefined
         });
 

@@ -67,6 +67,10 @@ export default class CSharpTargetLanguage extends TargetLanguage {
         return { date: "date-time", time: "date-time", dateTime: "date-time" };
     }
 
+    get supportsUnionsWithBothNumberTypes(): boolean {
+        return true;
+    }
+
     protected get rendererClass(): new (
         graph: TypeGraph,
         leadingComments: string[] | undefined,
@@ -155,7 +159,21 @@ class CSharpRenderer extends ConvenienceRenderer {
     }
 
     protected forbiddenForClassProperties(_: ClassType, classNamed: Name): ForbiddenWordsInfo {
-        return { names: [classNamed, "FromJson"], includeGlobalForbidden: true };
+        return {
+            names: [
+                classNamed,
+                "ToJson",
+                "FromJson",
+                "ToString",
+                "GetHashCode",
+                "Finalize",
+                "Equals",
+                "GetType",
+                "MemberwiseClone",
+                "ReferenceEquals"
+            ],
+            includeGlobalForbidden: false
+        };
     }
 
     protected forbiddenForUnionMembers(_: UnionType, unionNamed: Name): ForbiddenWordsInfo {
@@ -330,7 +348,7 @@ class CSharpRenderer extends ConvenienceRenderer {
             // FIXME: Make FromJson a Named
             this.emitExpressionMember(
                 ["public static ", csType, " FromJson(string json)"],
-                ["JsonConvert.DeserializeObject<", csType, ">(json, Converter.Settings)"]
+                ["JsonConvert.DeserializeObject<", csType, ">(json, ", this._namespaceName, ".Converter.Settings)"]
             );
         });
     };
@@ -494,7 +512,7 @@ class CSharpRenderer extends ConvenienceRenderer {
                 // FIXME: Make ToJson a Named
                 this.emitExpressionMember(
                     ["public static string ToJson(this ", this.csType(t), " self)"],
-                    "JsonConvert.SerializeObject(self, Converter.Settings)"
+                    ["JsonConvert.SerializeObject(self, ", this._namespaceName, ".Converter.Settings)"]
                 );
             });
         });

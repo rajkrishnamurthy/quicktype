@@ -129,7 +129,11 @@ export abstract class TypeBuilder {
     protected readonly types: (Type | undefined)[] = [];
     private readonly typeNames: (TypeNames | undefined)[] = [];
 
-    constructor(private readonly _stringTypeMapping: StringTypeMapping, readonly alphabetizeProperties: boolean) {}
+    constructor(
+        private readonly _stringTypeMapping: StringTypeMapping,
+        readonly alphabetizeProperties: boolean,
+        private readonly _allPropertiesOptional: boolean
+    ) {}
 
     addTopLevel(name: string, tref: TypeRef): void {
         // assert(t.typeGraph === this.typeGraph, "Adding top-level to wrong type graph");
@@ -146,13 +150,12 @@ export abstract class TypeBuilder {
         return new TypeRef(this.typeGraph, index, undefined);
     }
 
-    private commitType = (tref: TypeRef, t: Type, names: TypeNames | undefined): void => {
+    private commitType = (tref: TypeRef, t: Type): void => {
         const index = tref.getIndex();
         // const name = names !== undefined ? ` ${names.combinedName}` : "";
         // console.log(`committing ${t.kind}${name} to ${index}`);
         assert(this.types[index] === undefined, "A type index was committed twice");
         this.types[index] = t;
-        this.typeNames[index] = names;
     };
 
     protected addType<T extends Type>(
@@ -160,12 +163,6 @@ export abstract class TypeBuilder {
         creator: (tref: TypeRef) => T,
         names: TypeNames | undefined
     ): TypeRef {
-        if (names !== undefined) {
-            // We need to copy the names here because they're modified
-            // in `gatherNames`, and the caller doesn't guarantee that
-            // this one is unique for this type.
-            names = names.copy();
-        }
         if (forwardingRef !== undefined && forwardingRef.maybeIndex !== undefined) {
             assert(this.types[forwardingRef.maybeIndex] === undefined);
         }
@@ -177,7 +174,7 @@ export abstract class TypeBuilder {
             this.addNames(tref, names);
         }
         const t = creator(tref);
-        this.commitType(tref, t, names);
+        this.commitType(tref, t);
         if (forwardingRef !== undefined && tref !== forwardingRef) {
             forwardingRef.resolve(tref);
         }
@@ -195,12 +192,13 @@ export abstract class TypeBuilder {
 
     addNames = (tref: TypeRef, names: TypeNames): void => {
         tref.callWhenResolved(index => {
-            const tn = this.typeNames[index];
+            let tn = this.typeNames[index];
             if (tn === undefined) {
-                this.typeNames[index] = names;
+                tn = names;
             } else {
-                tn.add(names);
+                tn = tn.add(names);
             }
+            this.typeNames[index] = tn;
         });
     };
 
@@ -302,13 +300,18 @@ export abstract class TypeBuilder {
         return tref;
     }
 
-    sortPropertiesIfNecessary(properties: OrderedMap<string, ClassProperty>): OrderedMap<string, ClassProperty> {
-        if (!this.alphabetizeProperties) return properties;
-        return properties.sortBy((_, n) => n);
+    modifyPropertiesIfNecessary(properties: OrderedMap<string, ClassProperty>): OrderedMap<string, ClassProperty> {
+        if (this.alphabetizeProperties) {
+            properties = properties.sortBy((_, n) => n);
+        }
+        if (this._allPropertiesOptional) {
+            properties = properties.map(cp => new ClassProperty(cp.typeRef, true));
+        }
+        return properties;
     }
 
     getClassType(names: TypeNames, properties: OrderedMap<string, ClassProperty>, forwardingRef?: TypeRef): TypeRef {
-        properties = this.sortPropertiesIfNecessary(properties);
+        properties = this.modifyPropertiesIfNecessary(properties);
         let tref = this._classTypes.get(properties.toMap());
         // FIXME: It's not clear to me that the `forwardingRef` condition here
         // might actually ever be true.  And if it can, shouldn't we also have
@@ -330,6 +333,9 @@ export abstract class TypeBuilder {
         properties?: OrderedMap<string, ClassProperty>,
         forwardingRef?: TypeRef
     ): TypeRef => {
+        if (properties !== undefined) {
+            properties = this.modifyPropertiesIfNecessary(properties);
+        }
         return this.addType(forwardingRef, tref => new ClassType(tref, isFixed, properties), names);
     };
 
@@ -338,7 +344,7 @@ export abstract class TypeBuilder {
         if (!(type instanceof ClassType)) {
             return panic("Tried to set properties of non-class type");
         }
-        properties = this.sortPropertiesIfNecessary(properties);
+        properties = this.modifyPropertiesIfNecessary(properties);
         type.setProperties(properties);
     }
 
@@ -476,7 +482,7 @@ export class GraphRewriteBuilder<T extends Type> extends TypeBuilder implements 
             forwardingRef: TypeRef
         ) => TypeRef
     ) {
-        super(stringTypeMapping, alphabetizeProperties);
+        super(stringTypeMapping, alphabetizeProperties, false);
         this._setsToReplaceByMember = Map();
         for (const types of setsToReplace) {
             const set = Set(types);
@@ -616,6 +622,7 @@ export abstract class UnionBuilder<TBuilder extends TypeBuilder, TArray, TClass,
     constructor(
         protected readonly typeBuilder: TBuilder,
         protected readonly typeNames: TypeNames,
+        private readonly _conflateNumbers: boolean,
         protected readonly forwardingRef?: TypeRef
     ) {}
 
@@ -693,7 +700,8 @@ export abstract class UnionBuilder<TBuilder extends TypeBuilder, TArray, TClass,
         }
         if (this._haveDouble) {
             types.push(this.typeBuilder.getPrimitiveType("double", this.forwardingRef));
-        } else if (this._haveInteger) {
+        }
+        if (this._haveInteger && !(this._conflateNumbers && this._haveDouble)) {
             types.push(this.typeBuilder.getPrimitiveType("integer", this.forwardingRef));
         }
         this._stringTypes.forEach(kind => {

@@ -94,6 +94,12 @@ function typeNameStyle(prefix: string, original: string): string {
 }
 
 function propertyNameStyle(original: string, isBool: boolean = false): string {
+    // Objective-C developers are uncomfortable with property "id"
+    // so we use an alternate name in this special case.
+    if (original === "id") {
+        original = "identifier";
+    }
+
     let words = splitIntoWords(original);
 
     if (isBool) {
@@ -174,6 +180,7 @@ const keywords = [
 ];
 
 const forbiddenPropertyNames = [
+    "id",
     "hash",
     "description",
     "init",
@@ -184,7 +191,25 @@ const forbiddenPropertyNames = [
     "new"
 ];
 
-const booleanPrefixes = ["is", "has", "have", "does", "do", "requires", "require", "needs", "need"];
+const booleanPrefixes = [
+    "is",
+    "are",
+    "were",
+    "was",
+    "will",
+    "all",
+    "some",
+    "many",
+    "has",
+    "have",
+    "had",
+    "does",
+    "do",
+    "requires",
+    "require",
+    "needs",
+    "need"
+];
 
 function isStartCharacter(utf16Unit: number): boolean {
     return unicode.isAlphabetic(utf16Unit) || utf16Unit === 0x5f; // underscore
@@ -635,6 +660,7 @@ class ObjectiveCRenderer extends ConvenienceRenderer {
 
     private emitClassInterface = (t: ClassType, className: Name): void => {
         const isTopLevel = this.topLevels.valueSeq().contains(t);
+        const propertyTable: Sourcelike[][] = [];
 
         this.emitLine("@interface ", className, " : NSObject");
         if (DEBUG) this.emitLine("@property NSDictionary<NSString *, id> *_json;");
@@ -646,15 +672,12 @@ class ObjectiveCRenderer extends ConvenienceRenderer {
                 attributes.push("nullable");
             }
             attributes.push(this.memoryAttribute(property.type, property.type.isNullable));
-            this.emitLine(
-                "@property ",
-                ["(", attributes.join(", "), ")"],
-                " ",
-                this.pointerAwareTypeName(property.type),
-                name,
-                ";"
-            );
+            propertyTable.push([
+                ["@property ", ["(", attributes.join(", "), ")"], " "],
+                [this.pointerAwareTypeName(property.type), name, ";"]
+            ]);
         });
+        this.emitTable(propertyTable);
 
         if (!this._justTypes && isTopLevel) {
             if (t.properties.count() > 0) this.ensureBlankLine();
@@ -687,7 +710,7 @@ class ObjectiveCRenderer extends ConvenienceRenderer {
 
         this.emitLine("@implementation ", className);
         if (!this._justTypes) {
-            this.emitMethod("+(NSDictionary<NSString *, NSString *> *)properties", () => {
+            this.emitMethod("+ (NSDictionary<NSString *, NSString *> *)properties", () => {
                 this.emitLine("static NSDictionary<NSString *, NSString *> *properties;");
                 this.emitLine("return properties = properties ? properties : @{");
                 this.indent(() => {
@@ -736,7 +759,7 @@ class ObjectiveCRenderer extends ConvenienceRenderer {
 
             if (hasIrregularProperties) {
                 this.ensureBlankLine();
-                this.emitMethod("-(void)setValue:(nullable id)value forKey:(NSString *)key", () => {
+                this.emitMethod("- (void)setValue:(nullable id)value forKey:(NSString *)key", () => {
                     this.emitLine("[super setValue:value forKey:", className, ".properties[key]];");
                 });
             }
@@ -984,11 +1007,11 @@ class ObjectiveCRenderer extends ConvenienceRenderer {
                 this.ensureBlankLine();
                 this.emitExtraComments("Shorthand for simple blocks");
                 this.emitLine(`#define λ(decl, expr) (^(decl) { return (expr); })`);
-                if (this._extraComments) {
-                    this.ensureBlankLine();
-                }
+                this.ensureBlankLine();
                 this.emitExtraComments("nil → NSNull conversion for JSON dictionaries");
-                this.emitLine("#define NSNullify(x) ([x isNotEqualTo:[NSNull null]] ? x : [NSNull null])");
+                this.emitBlock("static id NSNullify(id _Nullable x)", () =>
+                    this.emitLine("return (x == nil || x == NSNull.null) ? NSNull.null : x;")
+                );
                 this.ensureBlankLine();
                 this.emitLine("NS_ASSUME_NONNULL_BEGIN");
                 this.ensureBlankLine();
@@ -1052,10 +1075,10 @@ class ObjectiveCRenderer extends ConvenienceRenderer {
         if (this.needsMap) {
             this.emitMultiline(`static id map(id collection, id (^f)(id value)) {
     id result = nil;
-    if ([collection isKindOfClass:[NSArray class]]) {
+    if ([collection isKindOfClass:NSArray.class]) {
         result = [NSMutableArray arrayWithCapacity:[collection count]];
         for (id x in collection) [result addObject:f(x)];
-    } else if ([collection isKindOfClass:[NSDictionary class]]) {
+    } else if ([collection isKindOfClass:NSDictionary.class]) {
         result = [NSMutableDictionary dictionaryWithCapacity:[collection count]];
         for (id key in collection) [result setObject:f([collection objectForKey:key]) forKey:key];
     }

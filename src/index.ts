@@ -8,7 +8,7 @@ import { TargetLanguage } from "./TargetLanguage";
 import { SerializedRenderResult, Annotation, Location, Span } from "./Source";
 import { assertNever } from "./Support";
 import { CompressedJSON, Value } from "./CompressedJSON";
-import { combineClasses } from "./CombineClasses";
+import { combineClasses, findSimilarityCliques } from "./CombineClasses";
 import { schemaToType } from "./JSONSchemaInput";
 import { TypeInference } from "./Inference";
 import { inferMaps } from "./InferMaps";
@@ -27,12 +27,15 @@ export { OptionDefinition } from "./RendererOptions";
 
 const stringToStream = require("string-to-stream");
 
-export function getTargetLanguage(name: string): TargetLanguage {
-    const language = targetLanguages.languageNamed(name);
+export function getTargetLanguage(nameOrInstance: string | TargetLanguage): TargetLanguage {
+    if (typeof nameOrInstance === "object") {
+        return nameOrInstance;
+    }
+    const language = targetLanguages.languageNamed(nameOrInstance);
     if (language !== undefined) {
         return language;
     }
-    throw new Error(`'${name}' is not yet supported as an output language.`);
+    throw new Error(`'${nameOrInstance}' is not yet supported as an output language.`);
 }
 
 export type RendererOptions = { [name: string]: string };
@@ -70,12 +73,14 @@ export function isGraphQLSource(source: TypeSource): source is GraphQLTypeSource
 export type TypeSource = GraphQLTypeSource | JSONTypeSource | SchemaTypeSource;
 
 export interface Options {
-    lang: string;
+    lang: string | TargetLanguage;
     sources: TypeSource[];
     handlebarsTemplate: string | undefined;
+    findSimilarClassesSchema: string | undefined;
     inferMaps: boolean;
     inferEnums: boolean;
     alphabetizeProperties: boolean;
+    allPropertiesOptional: boolean;
     combineClasses: boolean;
     noRender: boolean;
     leadingComments: string[] | undefined;
@@ -88,9 +93,11 @@ const defaultOptions: Options = {
     lang: "ts",
     sources: [],
     handlebarsTemplate: undefined,
+    findSimilarClassesSchema: undefined,
     inferMaps: true,
     inferEnums: true,
     alphabetizeProperties: false,
+    allPropertiesOptional: false,
     combineClasses: true,
     noRender: false,
     leadingComments: undefined,
@@ -132,11 +139,22 @@ export class Run {
     private makeGraph = (): TypeGraph => {
         const targetLanguage = getTargetLanguage(this._options.lang);
         const stringTypeMapping = targetLanguage.stringTypeMapping;
-        const typeBuilder = new TypeGraphBuilder(stringTypeMapping, this._options.alphabetizeProperties);
+        const conflateNumbers = !targetLanguage.supportsUnionsWithBothNumberTypes;
+        const typeBuilder = new TypeGraphBuilder(
+            stringTypeMapping,
+            this._options.alphabetizeProperties,
+            this._options.allPropertiesOptional
+        );
+
+        if (this._options.findSimilarClassesSchema !== undefined) {
+            const schema = JSON.parse(this._options.findSimilarClassesSchema);
+            const name = "ComparisonBaseRoot";
+            typeBuilder.addTopLevel(name, schemaToType(typeBuilder, name, schema, conflateNumbers));
+        }
 
         // JSON Schema
         Map(this._allInputs.schemas).forEach((schema, name) => {
-            typeBuilder.addTopLevel(name, schemaToType(typeBuilder, name, schema));
+            typeBuilder.addTopLevel(name, schemaToType(typeBuilder, name, schema, conflateNumbers));
         });
 
         // GraphQL
@@ -162,15 +180,20 @@ export class Run {
         }
 
         const originalGraph = typeBuilder.finish();
+
+        if (this._options.findSimilarClassesSchema !== undefined) {
+            return originalGraph;
+        }
+
         let graph = originalGraph;
         if (this._options.combineClasses) {
-            graph = combineClasses(graph, stringTypeMapping, this._options.alphabetizeProperties);
+            graph = combineClasses(graph, stringTypeMapping, this._options.alphabetizeProperties, conflateNumbers);
         }
         if (doInferEnums) {
             graph = inferEnums(graph, stringTypeMapping);
         }
         if (this._options.inferMaps) {
-            graph = inferMaps(graph, stringTypeMapping);
+            graph = inferMaps(graph, stringTypeMapping, conflateNumbers);
         }
         graph = noneToAny(graph, stringTypeMapping);
         if (!targetLanguage.supportsOptionalClassProperties) {
@@ -184,12 +207,19 @@ export class Run {
         // FIXME: We don't actually have to do this if any of the above graph
         // rewrites did anything.  We could just check whether the current graph
         // is different from the one we started out with.
-        graph = graph.garbageCollect();
+        graph = graph.garbageCollect(this._options.alphabetizeProperties);
 
         gatherNames(graph);
 
         return graph;
     };
+
+    private makeSimpleTextResult(lines: string[]): OrderedMap<string, SerializedRenderResult> {
+        return OrderedMap([[this._options.outputFilename, { lines, annotations: List() }]] as [
+            string,
+            SerializedRenderResult
+        ][]);
+    }
 
     public run = async (): Promise<OrderedMap<string, SerializedRenderResult>> => {
         const targetLanguage = getTargetLanguage(this._options.lang);
@@ -222,10 +252,21 @@ export class Run {
         const graph = this.makeGraph();
 
         if (this._options.noRender) {
-            return OrderedMap([[this._options.outputFilename, { lines: ["Done.", ""], annotations: List() }]] as [
-                string,
-                SerializedRenderResult
-            ][]);
+            return this.makeSimpleTextResult(["Done.", ""]);
+        }
+
+        if (this._options.findSimilarClassesSchema !== undefined) {
+            const cliques = findSimilarityCliques(graph, true);
+            const lines: string[] = [];
+            if (cliques.length === 0) {
+                lines.push("No similar classes found.");
+            } else {
+                for (let clique of cliques) {
+                    lines.push(`similar: ${clique.map(c => c.getCombinedName()).join(", ")}`);
+                }
+            }
+            lines.push("");
+            return this.makeSimpleTextResult(lines);
         }
 
         if (this._options.handlebarsTemplate !== undefined) {

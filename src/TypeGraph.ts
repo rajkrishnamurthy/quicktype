@@ -163,6 +163,11 @@ export class TypeGraph {
         return [t, this._namesStoreView.tryGet(t)];
     }
 
+    setNames(t: Type, names: TypeNames): void {
+        assert(t.typeRef.graph === this, "Setting names for type not in graph");
+        this._namesStoreView.set(t, names);
+    }
+
     filterTypes(
         predicate: ((t: Type) => boolean) | undefined,
         childrenOfType: ((t: Type) => Collection<any, Type>) | undefined,
@@ -224,9 +229,9 @@ export class TypeGraph {
         ).finish();
     }
 
-    garbageCollect(): TypeGraph {
+    garbageCollect(alphabetizeProperties: boolean): TypeGraph {
         // console.log("GC");
-        return new GraphRewriteBuilder(this, NoStringTypeMapping, true, [], (_t, _b) =>
+        return new GraphRewriteBuilder(this, NoStringTypeMapping, alphabetizeProperties, [], (_t, _b) =>
             panic("This shouldn't be called")
         ).finish();
     }
